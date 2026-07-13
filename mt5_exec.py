@@ -4,9 +4,9 @@ import threading
 from datetime import datetime, timezone
 
 SYMBOL        = "US500"
-LOT           = 0.01
-SL_POINTS     = 100
-TP_POINTS     = 200
+LOT           = 0.05
+SL_POINTS     = 300
+TP_POINTS     = 400
 MAGIC         = 20240001
 COOLDOWN_SECS = 60
 DEVIATION     = 20
