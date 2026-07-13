@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 SYMBOL        = "US500"
 LOT           = 0.01
-SL_POINTS     = 100      # 100 FBS points = 1 ES point
-TP_POINTS     = 200      # 200 FBS points = 2 ES points
+SL_POINTS     = 100
+TP_POINTS     = 200
 MAGIC         = 20240001
 COOLDOWN_SECS = 60
 DEVIATION     = 20
@@ -28,31 +28,25 @@ def init_mt5():
         print(f"[{_now()}] ❌ MT5 init failed: {mt5.last_error()}", flush=True)
         _mt5_ready = False
         return False
-
     info = mt5.account_info()
     if info is None:
-        print(f"[{_now()}] ❌ MT5 account_info failed", flush=True)
+        print(f"[{_now()}] ❌ account_info failed", flush=True)
         _mt5_ready = False
         return False
-
-    # Ensure symbol visible
     mt5.symbol_select(SYMBOL, True)
-
-    print(f"[{_now()}] ✅ MT5 connected", flush=True)
-    print(f"  Account: {info.login} | Balance: ${info.balance:.2f} | "
+    print(f"[{_now()}] ✅ MT5 connected | "
+          f"Account: {info.login} | Balance: ${info.balance:.2f} | "
           f"Server: {info.server}", flush=True)
     _mt5_ready = True
     return True
 
 
 def _ensure_mt5():
-    """Reconnect if MT5 connection dropped."""
     global _mt5_ready
     if not _mt5_ready:
         return init_mt5()
-    # Quick ping
     if mt5.account_info() is None:
-        print(f"[{_now()}] MT5 connection lost — reconnecting...", flush=True)
+        print(f"[{_now()}] MT5 dropped — reconnecting...", flush=True)
         mt5.shutdown()
         time.sleep(1)
         return init_mt5()
@@ -67,6 +61,43 @@ def cooldown_remaining():
     return max(0, int(COOLDOWN_SECS - (time.time() - _last_ts)))
 
 
+def _send_order(request):
+    """
+    Try all three filling modes in sequence.
+    FBS typically uses FILLING_IOC or FILLING_RETURN.
+    Returns the first successful result or the last failure.
+    """
+    filling_modes = [
+        mt5.ORDER_FILLING_IOC,
+        mt5.ORDER_FILLING_RETURN,
+        mt5.ORDER_FILLING_FOK,
+    ]
+    filling_names = ["IOC", "RETURN", "FOK"]
+
+    last_result = None
+    for mode, name in zip(filling_modes, filling_names):
+        request["type_filling"] = mode
+        result = mt5.order_send(request)
+        if result is None:
+            print(f"  [{name}] order_send returned None: "
+                  f"{mt5.last_error()}", flush=True)
+            last_result = None
+            continue
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            print(f"  ✅ [{name}] filling mode works!", flush=True)
+            return result
+        print(f"  [{name}] retcode={result.retcode} "
+              f"comment={result.comment}", flush=True)
+        last_result = result
+        # Only retry on filling-related errors
+        if result.retcode not in (
+            mt5.TRADE_RETCODE_INVALID_FILL,
+            10030,   # unsupported filling mode
+        ):
+            return result   # different error — no point retrying modes
+    return last_result
+
+
 def fire(action: str, reason: str) -> dict:
     global _last_ts, _last_dir, _last_res
 
@@ -74,11 +105,8 @@ def fire(action: str, reason: str) -> dict:
         if not can_fire():
             return {"ok": False, "skipped": True,
                     "reason": f"cooldown {cooldown_remaining()}s"}
-
         if action not in ("buy", "sell"):
             return {"ok": False, "error": f"invalid action: {action}"}
-
-        # Reserve cooldown slot immediately
         _last_ts  = time.time()
         _last_dir = action
 
@@ -92,7 +120,8 @@ def fire(action: str, reason: str) -> dict:
     tick = mt5.symbol_info_tick(SYMBOL)
     sym  = mt5.symbol_info(SYMBOL)
     if tick is None or sym is None:
-        res = {"ok": False, "error": f"symbol info failed: {mt5.last_error()}"}
+        res = {"ok": False,
+               "error": f"symbol info failed: {mt5.last_error()}"}
         _last_res = res
         return res
 
@@ -108,51 +137,53 @@ def fire(action: str, reason: str) -> dict:
         tp_price   = round(price - TP_POINTS * sym.point, sym.digits)
 
     request = {
-        "action":       mt5.TRADE_ACTION_DEAL,
-        "symbol":       SYMBOL,
-        "volume":       LOT,
-        "type":         order_type,
-        "price":        price,
-        "sl":           sl_price,
-        "tp":           tp_price,
-        "deviation":    DEVIATION,
-        "magic":        MAGIC,
-        "comment":      f"es-algo {action}",
-        "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "action":    mt5.TRADE_ACTION_DEAL,
+        "symbol":    SYMBOL,
+        "volume":    LOT,
+        "type":      order_type,
+        "price":     price,
+        "sl":        sl_price,
+        "tp":        tp_price,
+        "deviation": DEVIATION,
+        "magic":     MAGIC,
+        "comment":   f"es-algo {action}",
+        "type_time": mt5.ORDER_TIME_GTC,
+        # type_filling set inside _send_order
     }
 
     print(f"  price={price} sl={sl_price} tp={tp_price} "
           f"lot={LOT}", flush=True)
 
-    result = mt5.order_send(request)
+    result = _send_order(request)
 
     if result is None:
-        res = {"ok": False, "error": f"order_send None: {mt5.last_error()}"}
+        res = {"ok": False,
+               "error": f"all filling modes failed: {mt5.last_error()}"}
         _last_res = res
-        print(f"  ❌ {res}", flush=True)
+        print(f"  ❌ {res['error']}", flush=True)
         return res
 
     if result.retcode == mt5.TRADE_RETCODE_DONE:
         res = {
-            "ok":      True,
-            "action":  action,
-            "ticket":  result.order,
-            "price":   result.price,
-            "volume":  result.volume,
-            "retcode": result.retcode,
+            "ok":       True,
+            "action":   action,
+            "ticket":   result.order,
+            "price":    result.price,
+            "volume":   result.volume,
+            "retcode":  result.retcode,
             "fired_at": _now(),
         }
-        print(f"  ✅ {action.upper()} executed | "
-              f"ticket={result.order} price={result.price}", flush=True)
+        print(f"  ✅ {action.upper()} ticket={result.order} "
+              f"price={result.price}", flush=True)
     else:
         res = {
-            "ok":      False,
-            "retcode": result.retcode,
-            "comment": result.comment,
+            "ok":       False,
+            "retcode":  result.retcode,
+            "comment":  result.comment,
             "fired_at": _now(),
         }
-        print(f"  ❌ Order failed retcode={result.retcode} "
+        print(f"  ❌ All modes failed. Last: "
+              f"retcode={result.retcode} "
               f"comment={result.comment}", flush=True)
 
     _last_res = res
