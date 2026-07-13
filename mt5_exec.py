@@ -3,7 +3,7 @@ import time
 import threading
 from datetime import datetime, timezone
 
-SYMBOL        = "US500"
+SYMBOL        = "US100"
 LOT           = 0.05
 SL_POINTS     = 300
 TP_POINTS     = 400
