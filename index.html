@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&display=swap');
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Roboto Mono',monospace;background:#0a0a0a;color:#e2e8f0;padding:12px;}
+.topbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 14px;background:#111827;border:1px solid #1f2937;
+  border-radius:10px;margin-bottom:8px;}
+.title{font-size:15px;font-weight:700;color:#22c55e;}
+.badge{padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;
+  background:#374151;color:#9ca3af;}
+.badge.live{background:#14532d;color:#22c55e;}
+.badge.err{background:#450a0a;color:#f87171;}
+.meta{font-size:11px;color:#6b7280;}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:6px;margin-bottom:8px;}
+.sbox{background:#111827;border:1px solid #1f2937;border-radius:8px;padding:8px 10px;}
+.slabel{font-size:9px;color:#6b7280;margin-bottom:2px;}
+.sval{font-size:15px;font-weight:700;}
+.g{color:#22c55e;}.r{color:#ef4444;}.y{color:#fbbf24;}
+.w{color:#f1f5f9;}.c{color:#22d3ee;}.p{color:#a78bfa;}
+
+#sig-banner{display:none;padding:9px 14px;border-radius:8px;
+  font-size:12px;font-weight:700;margin-bottom:8px;text-align:center;}
+#sig-banner.buy{background:#14532d;color:#22c55e;border:1px solid #22c55e;}
+#sig-banner.sell{background:#450a0a;color:#ef4444;border:1px solid #ef4444;}
+#sig-banner.cool{background:#1c1917;color:#a78bfa;border:1px solid #a78bfa;}
+
+.bar-wrap{background:#111827;border:1px solid #1f2937;border-radius:8px;
+  padding:8px 12px;margin-bottom:8px;}
+.bar-row{display:flex;justify-content:space-between;font-size:9px;color:#6b7280;margin-bottom:3px;}
+.bar-track{height:7px;background:#1f2937;border-radius:4px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:4px;transition:width 0.3s,background 0.3s;}
+
+.tape-hdr{display:grid;grid-template-columns:105px 80px 65px 50px 110px;
+  gap:6px;padding:5px 10px;background:#111827;border:1px solid #1f2937;
+  border-radius:8px 8px 0 0;font-size:9px;color:#6b7280;font-weight:700;}
+#tape-vp{height:46vh;overflow:hidden;background:#000;
+  border:1px solid #1f2937;border-top:none;border-radius:0 0 8px 8px;position:relative;}
+#tape-in{position:absolute;bottom:0;left:0;right:0;}
+.trow{display:grid;grid-template-columns:105px 80px 65px 50px 110px;
+  gap:6px;padding:4px 10px;border-bottom:1px solid #0d1117;font-size:10px;}
+.trow.b{background:rgba(34,197,94,0.07);}
+.trow.s{background:rgba(239,68,68,0.07);}
+.trow.lb{background:rgba(34,197,94,0.18);font-weight:700;}
+.trow.ls{background:rgba(239,68,68,0.18);font-weight:700;}
+.tc{color:#94a3b8;}.bc{color:#22c55e;font-weight:700;}
+.sc{color:#ef4444;font-weight:700;}.nc{color:#6b7280;}
+.lc{color:#fbbf24;font-weight:700;}
+
+.ctrl{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center;}
+.btn{padding:6px 14px;border-radius:7px;font-family:inherit;
+  font-size:11px;font-weight:700;cursor:pointer;border:none;}
+.bg{background:#15803d;color:#fff;}.bg:hover{background:#16a34a;}
+.br{background:#b91c1c;color:#fff;}.br:hover{background:#dc2626;}
+.bgy{background:#374151;color:#d1d5db;}.bgy:hover{background:#4b5563;}
+.inp{background:#111827;border:1px solid #374151;color:#e2e8f0;
+  border-radius:6px;padding:5px 8px;font-family:inherit;font-size:11px;width:70px;}
+
+#log-box{margin-top:8px;background:#000;border:1px solid #1f2937;
+  border-radius:8px;padding:8px;height:120px;overflow-y:auto;
+  font-size:9px;color:#6b7280;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="title">ES1! ALGO</span>
+  <span class="badge" id="trade-badge">TRADE: OFF</span>
+  <span class="badge" id="depth-badge">DEPTH: OFF</span>
+  <span class="meta" id="last-update">--:--:-- UTC</span>
+</div>
+
+<div class="stats">
+  <div class="sbox"><div class="slabel">LAST PRICE</div>
+    <div class="sval w" id="s-price">---</div></div>
+  <div class="sbox"><div class="slabel">CUM DELTA</div>
+    <div class="sval w" id="s-delta">0</div></div>
+  <div class="sbox"><div class="slabel">BUY VOL</div>
+    <div class="sval g" id="s-buy">0</div></div>
+  <div class="sbox"><div class="slabel">SELL VOL</div>
+    <div class="sval r" id="s-sell">0</div></div>
+  <div class="sbox"><div class="slabel">TAPE SPEED</div>
+    <div class="sval y" id="s-speed">0 ct/5s</div></div>
+  <div class="sbox"><div class="slabel">SIGNAL</div>
+    <div class="sval c" id="s-sig">WAITING</div></div>
+</div>
+
+<div id="sig-banner"></div>
+
+<!-- Imbalance bar -->
+<div class="bar-wrap">
+  <div class="bar-row">
+    <span>← SELL (BID)</span>
+    <span>ORDER BOOK IMBALANCE (30s avg)</span>
+    <span>BUY (ASK) →</span>
+  </div>
+  <div class="bar-track">
+    <div class="bar-fill" id="imb-fill" style="width:50%;background:#22c55e;"></div>
+  </div>
+  <div class="bar-row" style="margin-top:3px;">
+    <span class="sc" id="imb-ask">ask ---</span>
+    <span id="imb-pct" class="nc">50% / 50%</span>
+    <span class="bc" id="imb-bid">bid ---</span>
+  </div>
+</div>
+
+<!-- Speed bar -->
+<div class="bar-wrap">
+  <div class="bar-row">
+    <span>TAPE SPEED RATIO</span>
+    <span id="speed-lbl" class="y">ratio: ---</span>
+    <span id="speed-thresh-lbl" class="nc">2× threshold</span>
+  </div>
+  <div class="bar-track">
+    <div class="bar-fill" id="spd-fill" style="width:0%;background:#fbbf24;"></div>
+  </div>
+  <div class="bar-row" style="margin-top:3px;">
+    <span class="nc">5s: <span id="spd-5s">0</span> ct</span>
+    <span class="nc">60s avg: <span id="spd-60">0</span> ct/5s</span>
+  </div>
+</div>
+
+<!-- Tape -->
+<div class="tape-hdr">
+  <div>TIME (EAT)</div><div>PRICE</div>
+  <div>SIZE</div><div>DIR</div><div>SIDE</div>
+</div>
+<div id="tape-vp"><div id="tape-in"></div></div>
+
+<!-- Controls -->
+<div class="ctrl">
+  <button class="btn bgy" onclick="clearTape()">✕ CLEAR TAPE</button>
+  <span style="font-size:10px;color:#6b7280;">SPEED ×
+    <input id="ci-speed" type="number" value="2.0" step="0.1" class="inp" min="1"/>
+  </span>
+  <span style="font-size:10px;color:#6b7280;">IMB %
+    <input id="ci-imb" type="number" value="20" class="inp" min="5"/>
+  </span>
+  <button class="btn bg" onclick="applyThresh()">APPLY</button>
+  <button class="btn bg"  onclick="manualSignal('buy')">TEST BUY</button>
+  <button class="btn br"  onclick="manualSignal('sell')">TEST SELL</button>
+</div>
+
+<div id="log-box"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+//  VIRTUAL TAPE — 80 row cap, pool recycling
+// ═══════════════════════════════════════════════════════
+const MAXROWS = 80;
+const pool    = [];
+let   rowCnt  = 0;
+const EAT     = 3*3600*1000;
+
+function fmtEAT(ts){
+  let ms = ts < 1e12 ? ts*1000 : ts;
+  return new Date(Number(ms)+EAT).toISOString().slice(11,23);
+}
+
+function pushRow(time,price,vol,dirn,isLg){
+  const inner = document.getElementById("tape-in");
+  const isBuy = dirn === 1;
+  const row   = pool.length > 0 ? pool.pop() : document.createElement("div");
+
+  let cls = "trow ";
+  if(isLg) cls += isBuy ? "lb" : "ls";
+  else      cls += isBuy ? "b"  : "s";
+  row.className = cls;
+
+  const dStr = (isBuy?"+":"-") + Number(vol).toLocaleString();
+  const vStr = isLg
+    ? `<span class="lc">${Number(vol).toLocaleString()} ★</span>`
+    : `<span class="nc">${Number(vol).toLocaleString()}</span>`;
+  const sStr = isBuy
+    ? `<span class="bc">▲ ASK</span>`
+    : `<span class="sc">▼ BID</span>`;
+
+  row.innerHTML = `
+    <div class="tc">${time}</div>
+    <div class="w">${price}</div>
+    ${vStr}
+    <div class="${isBuy?"bc":"sc"}">${dStr}</div>
+    <div>${sStr}</div>`;
+
+  inner.appendChild(row);
+  rowCnt++;
+  if(rowCnt > MAXROWS){
+    const old = inner.firstElementChild;
+    if(old){ inner.removeChild(old); old.innerHTML=""; pool.push(old); rowCnt--; }
+  }
+}
+
+function clearTape(){
+  document.getElementById("tape-in").innerHTML="";
+  pool.length=0; rowCnt=0;
+}
+
+// ═══════════════════════════════════════════════════════
+//  STATE — last values to detect new trades
+// ═══════════════════════════════════════════════════════
+let _lastPrice  = 0;
+let _lastBuy    = 0;
+let _lastSell   = 0;
+let _lastSigTs  = 0;
+let _sigShowing = false;
+
+// ═══════════════════════════════════════════════════════
+//  POLL BACKEND EVERY 2s
+// ═══════════════════════════════════════════════════════
+async function poll(){
+  try{
+    const r  = await fetch("/run/get_status",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({data:[]})
+    });
+    const j  = await r.json();
+    const s  = j.data[0];
+    if(!s) return;
+    updateUI(s);
+  }catch(e){
+    console.error("Poll error:",e);
+  }
+}
+
+function updateUI(s){
+  // Badges
+  setBadge("trade-badge","TRADE","trade_ws",s);
+  setBadge("depth-badge","DEPTH","depth_ws",s);
+  document.getElementById("last-update").textContent = s.last_update || "";
+
+  // Stats
+  document.getElementById("s-price").textContent =
+    s.last_price ? s.last_price.toFixed(2) : "---";
+
+  const dEl = document.getElementById("s-delta");
+  const d   = s.cum_delta || 0;
+  dEl.textContent = (d>=0?"+":"") + Math.round(d).toLocaleString();
+  dEl.className   = "sval "+(d>=0?"g":"r");
+
+  document.getElementById("s-buy").textContent  =
+    Math.round(s.buy_vol||0).toLocaleString();
+  document.getElementById("s-sell").textContent =
+    Math.round(s.sell_vol||0).toLocaleString();
+  document.getElementById("s-speed").textContent =
+    `${Math.round(s.speed_5s||0)} ct/5s`;
+
+  // Synthesise new tape rows from delta in buy/sell vol
+  const newBuy  = (s.buy_vol||0)  - _lastBuy;
+  const newSell = (s.sell_vol||0) - _lastSell;
+  const thresh  = 50;
+  if(newBuy  > 0 && s.last_price !== _lastPrice){
+    pushRow(fmtEAT(Date.now()), s.last_price.toFixed(2),
+            newBuy, 1, newBuy >= thresh);
+  }
+  if(newSell > 0 && s.last_price !== _lastPrice){
+    pushRow(fmtEAT(Date.now()), s.last_price.toFixed(2),
+            newSell, -1, newSell >= thresh);
+  }
+  _lastBuy   = s.buy_vol  || 0;
+  _lastSell  = s.sell_vol || 0;
+  _lastPrice = s.last_price || 0;
+
+  // Speed bar
+  const ratio = s.speed_ratio || 0;
+  const mult  = parseFloat(document.getElementById("ci-speed").value)||2;
+  const spPct = Math.min(ratio/(mult*2)*100, 100);
+  const spFill= document.getElementById("spd-fill");
+  spFill.style.width      = spPct+"%";
+  spFill.style.background = ratio >= mult ? "#22c55e" : "#fbbf24";
+  document.getElementById("speed-lbl").textContent = `ratio: ${ratio.toFixed(2)}×`;
+  document.getElementById("spd-5s").textContent  = Math.round(s.speed_5s||0);
+  document.getElementById("spd-60").textContent  = Math.round(s.speed_60s_avg||0);
+  document.getElementById("speed-thresh-lbl").textContent = `${mult}× threshold`;
+
+  // Imbalance bar
+  const imb = s.imb_pct || 50;
+  const iF  = document.getElementById("imb-fill");
+  iF.style.width      = imb+"%";
+  iF.style.background = imb >= 50 ? "#22c55e" : "#ef4444";
+  document.getElementById("imb-pct").textContent =
+    `bid ${Math.round(imb)}% / ask ${Math.round(100-imb)}%`;
+  document.getElementById("imb-bid").textContent =
+    `bid ${s.imb_bid_px?.toFixed(2)||"---"} ×${s.imb_bid_sz||0}`;
+  document.getElementById("imb-ask").textContent =
+    `ask ${s.imb_ask_px?.toFixed(2)||"---"} ×${s.imb_ask_sz||0}`;
+
+  // Signal banner
+  const sd  = s.signal_dir || 0;
+  const cr  = s.cooldown_remaining || 0;
+  const sEl = document.getElementById("s-sig");
+  const ban = document.getElementById("sig-banner");
+
+  if(cr > 0){
+    ban.className = "cool";
+    ban.textContent = `⏳ COOLDOWN — next signal in ${cr}s`;
+    ban.style.display = "block";
+    sEl.textContent = `COOL ${cr}s`;
+    sEl.className   = "sval p";
+  } else if(sd !== 0 && s.signal_ts !== _lastSigTs){
+    const act = sd===1 ? "buy" : "sell";
+    ban.className   = act;
+    ban.textContent = `🚀 ${act.toUpperCase()} SIGNAL — ${s.signal_reason}`;
+    ban.style.display = "block";
+    sEl.textContent = act.toUpperCase();
+    sEl.className   = "sval "+(sd===1?"g":"r");
+    _lastSigTs = s.signal_ts;
+    // Auto-hide banner after 10s
+    setTimeout(()=>{ ban.style.display="none"; }, 10000);
+  } else if(cr === 0 && sd === 0){
+    ban.style.display = "none";
+    sEl.textContent = "WAITING";
+    sEl.className   = "sval c";
+  }
+
+  // Log
+  if(s.log && s.log.length > 0){
+    const lb = document.getElementById("log-box");
+    lb.innerHTML = s.log.slice().reverse()
+      .map(l=>`<div>${l}</div>`).join("");
+  }
+}
+
+function setBadge(id, label, key, s){
+  const el  = document.getElementById(id);
+  const val = s[key] || "offline";
+  el.textContent = `${label}: ${val.toUpperCase()}`;
+  el.className   = "badge "+(val==="live"?"live":val==="error"?"err":"");
+}
+
+// ═══════════════════════════════════════════════════════
+//  CONTROLS
+// ═══════════════════════════════════════════════════════
+async function applyThresh(){
+  const sp = parseFloat(document.getElementById("ci-speed").value)||2;
+  const im = parseFloat(document.getElementById("ci-imb").value)||20;
+  await fetch("/run/update_thresholds",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({data:[sp,im]})
+  });
+}
+
+async function manualSignal(action){
+  await fetch("/run/manual_signal",{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({data:[action]})
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  BOOT
+// ═══════════════════════════════════════════════════════
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+  </html>
