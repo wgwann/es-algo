@@ -9,27 +9,29 @@ from datetime import datetime, timezone, timedelta
 
 INFOWAY_KEY = os.environ.get("INFOWAY_API_KEY", "")
 
-# ── Session schedule (all times ET = UTC-4 in summer) ─────────
-# London open → 10:00 AM ET  : trade GC1!  → XAUUSD
-# 10:00 AM ET gap (30 min)
-# 10:30 AM ET → 3:30 PM ET   : trade ES1!  → US100
-# Outside these windows       : no trading
-GC_SESSION_START_ET  = (3,  0)   # 3:00 AM ET (London open)
-GC_SESSION_END_ET    = (9, 55)   # 9:55 AM ET
-ES_SESSION_START_ET  = (10, 0)  # 10:00 AM ET
-ES_SESSION_END_ET    = (15, 30)  # 3:30 PM ET
+GC_SESSION_START_ET  = (3,  0)
+GC_SESSION_END_ET    = (9, 55)
+ES_SESSION_START_ET  = (10, 0)
+ES_SESSION_END_ET    = (15, 30)
 
-# Warmup period — no signals for first 60s after connect
-WARMUP_SECS    = 60
-MIN_TRADE_BUF  = 1  # minimum trades in buffer before signals allowed
+WARMUP_SECS   = 60
+MIN_TRADE_BUF = 20
 
-# Signal thresholds
-SPEED_MULT   = 2.0
-IMB_THRESH   = 20.0
+SPEED_MULT  = 2.0
+IMB_THRESH  = 20.0
 
 _lock      = threading.Lock()
+
+# ── Trade buffer persists across reconnections ────────────────
+# We do NOT clear these on reconnect — only on session switch
 _trade_buf = deque(maxlen=5000)
 _depth_buf = deque(maxlen=200)
+
+# Warmup is tracked by wall-clock time and total trades seen
+# across the entire session, not reset on reconnect
+_session_start_time  = 0.0   # set once when session begins
+_total_trades_seen   = 0     # cumulative across reconnections
+_warmup_done         = False  # set to True once, never reset within session
 
 _state = {
     "last_price":    0.0,
@@ -56,19 +58,16 @@ _state = {
     "last_update":   "",
     "active_symbol": "none",
     "session":       "none",
-    "log":           deque(maxlen=60),
     "warmup":        True,
+    "trades_seen":   0,
+    "log":           deque(maxlen=60),
 }
-
-_start_time   = 0.0
-_current_sym  = None   # "GC1!" or "ES1!" — Infoway symbol
-_ws_instance  = None
 
 import mt5_exec as exe
 
-MIN_RECONNECT_GAP    = 5.0
-_last_connect_ts     = 0.0
-_connect_lock        = threading.Lock()
+MIN_RECONNECT_GAP = 5.0
+_last_connect_ts  = 0.0
+_connect_lock     = threading.Lock()
 
 
 def _now():
@@ -101,30 +100,16 @@ def set_thresholds(speed_mult=None, imb_thresh=None):
         SPEED_MULT = float(speed_mult)
     if imb_thresh is not None:
         IMB_THRESH = float(imb_thresh)
-    _log(f"Thresholds updated: speed={SPEED_MULT}x imb={IMB_THRESH}%")
+    _log(f"Thresholds: speed={SPEED_MULT}x imb={IMB_THRESH}%")
 
 
-# ── Session time logic ────────────────────────────────────────
 def _et_now():
-    """Current time in ET (UTC-4 during EDT, UTC-5 during EST).
-    Simple approach: use UTC-4 for summer (EDT).
-    For production adjust for EST in winter months."""
-    utc = datetime.now(timezone.utc)
-    # EDT = UTC - 4
-    et  = utc - timedelta(hours=4)
-    return et
+    return datetime.now(timezone.utc) - timedelta(hours=4)
 
 
 def _get_session():
-    """
-    Returns:
-      ("GC", "GC1!", "XAUUSD") during gold session
-      ("ES", "ES1!", "US100")  during ES session
-      (None, None, None)        outside trading hours
-    """
     et   = _et_now()
-    h, m = et.hour, et.minute
-    mins = h * 60 + m
+    mins = et.hour * 60 + et.minute
 
     gc_start = GC_SESSION_START_ET[0] * 60 + GC_SESSION_START_ET[1]
     gc_end   = GC_SESSION_END_ET[0]   * 60 + GC_SESSION_END_ET[1]
@@ -139,7 +124,6 @@ def _get_session():
         return (None, None, None)
 
 
-# ── Tick rule ─────────────────────────────────────────────────
 def _classify(price, td):
     with _lock:
         n = int(td) if td is not None else 0
@@ -160,30 +144,38 @@ def _classify(price, td):
         return _state["prev_dir"] if _state["prev_dir"] != 0 else 1
 
 
-# ── Signal evaluation ─────────────────────────────────────────
 def _compute_and_evaluate(mt5_symbol):
-    now   = time.time()
+    global _warmup_done
 
-    # Warmup check
-    with _lock:
-        in_warmup = _state["warmup"]
-        buf_size  = len(_trade_buf)
+    now = time.time()
 
-    if in_warmup:
-        elapsed = now - _start_time
-        if elapsed >= WARMUP_SECS and buf_size >= MIN_TRADE_BUF:
+    # ── Warmup check — persists across reconnections ──────────
+    # Uses wall-clock time from session start AND total trades
+    # seen since session began. Neither resets on reconnect.
+    if not _warmup_done:
+        elapsed = now - _session_start_time
+        with _lock:
+            seen = _total_trades_seen
+
+        if elapsed >= WARMUP_SECS and seen >= MIN_TRADE_BUF:
+            _warmup_done = True
             with _lock:
                 _state["warmup"] = False
-            _log(f"Warmup complete — signals now active "
-                 f"({buf_size} trades in buffer)")
+            _log(f"Warmup complete — {seen} trades seen over "
+                 f"{elapsed:.0f}s since session start")
         else:
             with _lock:
                 _state["signal_dir"] = 0
             return
 
+    # ── Speed computation ─────────────────────────────────────
+    # Only use trades from last 60s regardless of reconnections.
+    # The _trade_buf is NOT cleared on reconnect so data continuity
+    # is maintained — the ratio deviation you saw was caused by
+    # clearing the buffer on reconnect.
     cut5  = now - 5.0
     cut60 = now - 60.0
-    cut30 = now - 1.0
+    cut30 = now - 30.0
 
     while _trade_buf and _trade_buf[0]["ts"] < cut60:
         _trade_buf.popleft()
@@ -199,6 +191,10 @@ def _compute_and_evaluate(mt5_symbol):
     rsell = sum(t["vol"] for t in r5 if t["dir"] == -1)
     sdir  = 1 if rbuy >= rsell else -1
 
+    # ── Depth / imbalance ─────────────────────────────────────
+    # _depth_buf also persists across reconnections.
+    # After reconnect, new depth snapshots arrive within ~1s
+    # so the rolling average recovers quickly without reset.
     while _depth_buf and _depth_buf[0]["ts"] < cut30:
         _depth_buf.popleft()
 
@@ -229,8 +225,10 @@ def _compute_and_evaluate(mt5_symbol):
         return
 
     action = "buy" if sdir == 1 else "sell"
-    reason = (f"speed {ratio:.2f}x | "
-              f"imb {avg_imb:.0f}% | {action.upper()}")
+
+    # Include thresholds in reason for trade log assessment
+    reason = (f"speed {ratio:.2f}x | imb {avg_imb:.0f}% | "
+              f"delta {_state['cum_delta']:+.0f} | {action.upper()}")
 
     with _lock:
         _state["signal_dir"]    = sdir
@@ -242,7 +240,6 @@ def _compute_and_evaluate(mt5_symbol):
     _log(f"Execution: {json.dumps(result)}")
 
 
-# ── Subscribe to a symbol on an open WS ──────────────────────
 def _subscribe(ws, infoway_sym):
     ws.send(json.dumps({
         "code":  10000,
@@ -267,9 +264,11 @@ def _wait_for_connect_slot():
         _last_connect_ts = time.time()
 
 
-# ── WebSocket thread ──────────────────────────────────────────
 def _ws_thread():
-    global _current_sym, _ws_instance
+    global _session_start_time, _total_trades_seen, _warmup_done
+    global _current_session
+
+    _current_session = None
 
     while True:
         _wait_for_connect_slot()
@@ -281,56 +280,66 @@ def _ws_thread():
                 _state["ws_status"]     = "outside hours"
                 _state["active_symbol"] = "none"
                 _state["session"]       = "none"
-            _log("Outside trading hours — waiting...")
+            _log("Outside trading hours — waiting 30s...")
             time.sleep(30)
             continue
 
-        _log(f"Session: {session} | "
-             f"Infoway: {infoway_sym} | MT5: {mt5_symbol}")
+        # ── Session switch detection ──────────────────────────
+        # Only reset buffers and warmup when the session
+        # actually changes (GC→ES or ES→GC), NOT on reconnect
+        if session != _current_session:
+            _log(f"New session: {session} | "
+                 f"Infoway: {infoway_sym} | MT5: {mt5_symbol}")
+            _current_session     = session
+            _session_start_time  = time.time()
+            _total_trades_seen   = 0
+            _warmup_done         = False
 
-        with _lock:
-            _state["active_symbol"] = infoway_sym
-            _state["session"]       = session
-            _state["warmup"]        = True
+            # Clear buffers only on session switch
+            _trade_buf.clear()
+            _depth_buf.clear()
 
-        # Reset buffers on symbol switch
-        _trade_buf.clear()
-        _depth_buf.clear()
-        with _lock:
-            _state["cum_delta"]  = 0.0
-            _state["buy_vol"]    = 0.0
-            _state["sell_vol"]   = 0.0
-            _state["prev_price"] = 0.0
-            _state["prev_dir"]   = 0
-
-        global _start_time
-        _start_time = time.time()
+            with _lock:
+                _state["cum_delta"]     = 0.0
+                _state["buy_vol"]       = 0.0
+                _state["sell_vol"]      = 0.0
+                _state["prev_price"]    = 0.0
+                _state["prev_dir"]      = 0
+                _state["warmup"]        = True
+                _state["trades_seen"]   = 0
+                _state["active_symbol"] = infoway_sym
+                _state["session"]       = session
+        else:
+            # Reconnect within same session — no reset
+            _log(f"Reconnecting within {session} session "
+                 f"({infoway_sym}) — buffers preserved")
 
         def on_open(ws):
-            _ws_instance = ws
             with _lock:
                 _state["ws_status"] = "live"
             _log("WebSocket connected")
             _subscribe(ws, infoway_sym)
 
+            # ── CORRECT heartbeat: code 10010, no data field ──
+            # Infoway requires this exact format every <60s
+            # to prevent idle disconnection.
+            # Rate limit: 60 requests/min total (sub+unsub+hb)
+            # We send heartbeat every 25s — safe margin.
             def hb():
                 while True:
-                    time.sleep(15)
+                    time.sleep(25)
                     try:
                         if ws.sock and ws.sock.connected:
                             ws.send(json.dumps({
-                                "code":  10006,
+                                "code":  10010,
                                 "trace": uuid.uuid4().hex,
-                                "data":  {
-                                    "arr": [{"type": 1,
-                                             "codes": infoway_sym}]
-                                },
                             }))
                     except Exception:
                         break
             threading.Thread(target=hb, daemon=True).start()
 
         def on_message(ws, raw):
+            global _total_trades_seen
             try:
                 msg  = json.loads(raw)
                 code = msg.get("code")
@@ -341,12 +350,17 @@ def _ws_thread():
                     vol    = float(d["v"])
                     dirn   = _classify(price, d.get("td", 0))
                     is_buy = dirn == 1
+
+                    _total_trades_seen += 1
+
                     with _lock:
                         _state["last_price"]  = price
                         _state["cum_delta"]  += vol if is_buy else -vol
                         _state["buy_vol"]    += vol if is_buy else 0
                         _state["sell_vol"]   += 0   if is_buy else vol
                         _state["last_update"] = _now()
+                        _state["trades_seen"] = _total_trades_seen
+
                     _trade_buf.append({
                         "ts": time.time(), "vol": vol, "dir": dirn
                     })
@@ -365,6 +379,10 @@ def _ws_thread():
                         _state["imb_ask_px"] = ask_px
                         _state["imb_bid_sz"] = bid_sz
                         _state["imb_ask_sz"] = ask_sz
+
+                elif code == 10011:
+                    # Heartbeat ack — silent
+                    pass
 
             except Exception:
                 pass
@@ -393,11 +411,6 @@ def _ws_thread():
         except Exception as e:
             _log(f"WS exception: {e}")
 
-        # Check if session changed after disconnect
-        new_session, _, _ = _get_session()
-        if new_session != session:
-            _log(f"Session changed — switching symbol")
-
 
 def _eval_thread():
     while True:
@@ -411,7 +424,6 @@ def _eval_thread():
 
 
 def _breakeven_thread():
-    """Check breakeven every 5 seconds."""
     while True:
         time.sleep(5)
         try:
@@ -424,7 +436,7 @@ def start():
     if not INFOWAY_KEY:
         print("ERROR: INFOWAY_API_KEY not set", flush=True)
         return
-    threading.Thread(target=_ws_thread,      daemon=True).start()
-    threading.Thread(target=_eval_thread,    daemon=True).start()
+    threading.Thread(target=_ws_thread,       daemon=True).start()
+    threading.Thread(target=_eval_thread,     daemon=True).start()
     threading.Thread(target=_breakeven_thread, daemon=True).start()
-    _log("Algo started — all threads running")
+    _log("Algo started")
