@@ -230,7 +230,7 @@ def fire(action: str, reason: str, mt5_symbol: str) -> dict:
         "tp":           tp_price,
         "deviation":    DEVIATION,
         "magic":        MAGIC,
-        "comment":      f"es-algo {action}",
+        "comment": f"fabs{action} {reason}"[:31],  # MT5 comment max 31 chars
         "type_time":    mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_FOK,
     }
