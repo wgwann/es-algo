@@ -21,7 +21,7 @@ ES_SESSION_END_ET    = (15, 30)  # 3:30 PM ET
 
 # Warmup period — no signals for first 60s after connect
 WARMUP_SECS    = 60
-MIN_TRADE_BUF  = 30   # minimum trades in buffer before signals allowed
+MIN_TRADE_BUF  = 1  # minimum trades in buffer before signals allowed
 
 # Signal thresholds
 SPEED_MULT   = 2.0
@@ -183,7 +183,7 @@ def _compute_and_evaluate(mt5_symbol):
 
     cut5  = now - 5.0
     cut60 = now - 60.0
-    cut30 = now - 30.0
+    cut30 = now - 1.0
 
     while _trade_buf and _trade_buf[0]["ts"] < cut60:
         _trade_buf.popleft()
