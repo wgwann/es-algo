@@ -25,8 +25,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/status":
             self._send(200, json.dumps(algo.get_state()))
         elif self.path in ("/", "/index.html"):
-            with open("index.html", "rb") as f:
-                self._send(200, f.read(), "text/html")
+            try:
+                with open("index.html", "rb") as f:
+                    self._send(200, f.read(), "text/html")
+            except FileNotFoundError:
+                self._send(404, '{"error":"index.html not found"}')
         else:
             self._send(404, '{"error":"not found"}')
 
@@ -40,8 +43,16 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, '{"ok":true}')
         elif self.path == "/manual":
-            result = exe.fire(body.get("action","buy"), "manual")
-            self._send(200, json.dumps(result))
+            _, _, mt5_sym = algo._get_session()
+            if mt5_sym is None:
+                self._send(200, '{"ok":false,"error":"outside trading hours"}')
+            else:
+                result = exe.fire(
+                    body.get("action", "buy"),
+                    "manual",
+                    mt5_sym
+                )
+                self._send(200, json.dumps(result))
         else:
             self._send(404, '{"error":"not found"}')
 
